@@ -1,0 +1,19 @@
+# Environment variables (keep real credentials off GitHub)
+.env
+.env.*
+!.env.example
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local MLflow runs & artifacts
+mlruns/
+mlartifacts/
+*.db
