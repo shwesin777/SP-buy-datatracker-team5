@@ -17,3 +17,6 @@ env/
 mlruns/
 mlartifacts/
 *.db
+*.csv
+*.zip
+data/
