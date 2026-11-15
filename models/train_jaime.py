@@ -1,183 +1,219 @@
-"""PBI 6: Jaime's baseline and optimized Extra Trees experiments.
-
-Run from project root: python models/train_jaime.py
-Use shared MLflow instead of local recording: python models/train_jaime.py --remote
-Optional local data: python models/train_jaime.py --csv cleaned_base.csv
-"""
-import argparse
-import json
 import os
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-import mlflow
-import mlflow.sklearn
+import warnings
 import numpy as np
 import pandas as pd
+import mlflow
+import mlflow.sklearn
 from dotenv import load_dotenv
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import (accuracy_score, average_precision_score, confusion_matrix,
-                             f1_score, precision_score, recall_score, roc_auc_score)
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, train_test_split
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.metrics import (
+    roc_auc_score,
+    average_precision_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 
-ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / '.env')
-CATEGORICAL = ['country_code', 'collect_type', 'payment_method']
-# Use only fields expected to be available when the order is placed.
-# Current-order refund fields are excluded because refunds may occur later.
+
+# Allow importing db_config from ../database
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database")))
+from db_config import get_db_engine  # type: ignore
+
+warnings.filterwarnings("ignore")
+load_dotenv()
+
+# Point to your deployed MLflow tracking URI (falls back to local ./mlruns if not in .env)
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+mlflow.set_experiment("SP-Buy-Fraud-Detection-Jaime")
+
+CATEGORICAL = ["country_code", "collect_type", "payment_method"]
 BASE_FEATURES = CATEGORICAL + [
-    'mobile_verified', 'num_orders_last_50days',
-    'num_cancelled_orders_last_50days', 'num_refund_orders_last_50days',
-    'total_payment_last_50days', 'num_associated_customers',
-    'order_value', 'num_items_ordered', 'customer_age_days',
-    'order_day_of_week', 'order_month',
+    "mobile_verified",
+    "num_orders_last_50days",
+    "num_cancelled_orders_last_50days",
+    "num_refund_orders_last_50days",
+    "total_payment_last_50days",
+    "num_associated_customers",
+    "order_value",
+    "num_items_ordered",
+    "customer_age_days",
+    "order_day_of_week",
+    "order_month",
 ]
 
 
-def engineer_features(frame):
-    out = frame.copy()
-    count = out['num_orders_last_50days'].clip(lower=0)
-    age = out['customer_age_days'].clip(lower=0)
-    out['orders_per_account_day'] = count / (age + 1)
-    out['spend_per_account_day'] = out['total_payment_last_50days'] / (age + 1)
-    out['associated_per_account_day'] = out['num_associated_customers'] / (age + 1)
-    out['value_per_item'] = out['order_value'] / out['num_items_ordered'].clip(lower=1)
-    out['cancel_rate_50d'] = out['num_cancelled_orders_last_50days'] / (count + 1)
-    out['refund_rate_50d'] = out['num_refund_orders_last_50days'] / (count + 1)
-    out['unverified_account_velocity'] = (1 - out['mobile_verified']) * out['orders_per_account_day']
-    out['weekend_order'] = out['order_day_of_week'].isin([5, 6]).astype(int)
+def load_data_from_rds():
+    """Fetches cleaned_fraud_data from AWS RDS MySQL."""
+    print("Querying cleaned_fraud_data from AWS RDS MySQL...")
+    engine = get_db_engine()
+    query = "SELECT * FROM cleaned_fraud_data;"
+    df = pd.read_sql(query, con=engine)
+    print(f"Loaded {len(df):,} rows and {df.shape[1]} columns from RDS.")
+    return df
+
+
+def engineer_additional_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Adds domain-specific fraud interaction features for Model v2."""
+    out = df.copy()
+    count = out["num_orders_last_50days"].clip(lower=0)
+    age = out["customer_age_days"].clip(lower=0)
+
+    out["orders_per_account_day"] = count / (age + 1)
+    out["spend_per_account_day"] = out["total_payment_last_50days"] / (age + 1)
+    out["associated_per_account_day"] = out["num_associated_customers"] / (age + 1)
+    out["value_per_item"] = out["order_value"] / out["num_items_ordered"].clip(lower=1)
+    out["cancel_rate_50d"] = out["num_cancelled_orders_last_50days"] / (count + 1)
+    out["refund_rate_50d"] = out["num_refund_orders_last_50days"] / (count + 1)
+    out["unverified_account_velocity"] = (1 - out["mobile_verified"]) * out["orders_per_account_day"]
+    out["weekend_order"] = out["order_day_of_week"].isin([5, 6]).astype(int)
+
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-def build_pipeline(frame, **parameters):
-    numeric = [col for col in frame.columns if col not in CATEGORICAL]
-    preprocessing = ColumnTransformer([
-        ('numeric', SimpleImputer(strategy='median'), numeric),
-        ('categorical', Pipeline([
-            ('impute', SimpleImputer(strategy='most_frequent')),
-            ('encode', OneHotEncoder(handle_unknown='ignore')),
-        ]), CATEGORICAL),
-    ])
-    return Pipeline([
-        ('prep', preprocessing),
-        ('clf', ExtraTreesClassifier(random_state=42, n_jobs=-1, **parameters)),
-    ])
+def build_pipeline(features: pd.DataFrame, **parameters) -> Pipeline:
+    """Builds preprocessing and ExtraTreesClassifier pipeline."""
+    num_cols = [c for c in features.columns if c not in CATEGORICAL]
+
+    num_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+        ]
+    )
+
+    cat_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", num_transformer, num_cols),
+            ("cat", cat_transformer, CATEGORICAL),
+        ]
+    )
+
+    return Pipeline(
+        steps=[
+            ("prep", preprocessor),
+            ("clf", ExtraTreesClassifier(random_state=42, n_jobs=-1, **parameters)),
+        ]
+    )
 
 
-def evaluate(model, features, labels):
-    probabilities = model.predict_proba(features)[:, 1]
-    predictions = (probabilities >= 0.5).astype(int)
-    metrics = {
-        'accuracy': accuracy_score(labels, predictions),
-        'roc_auc': roc_auc_score(labels, probabilities),
-        'average_precision': average_precision_score(labels, probabilities),
-        'f1_score': f1_score(labels, predictions, zero_division=0),
-        'precision': precision_score(labels, predictions, zero_division=0),
-        'recall': recall_score(labels, predictions, zero_division=0),
+def evaluate_predictions(y_true, y_prob, threshold=0.5):
+    """Computes fraud-appropriate classification metrics."""
+    y_pred = (y_prob >= threshold).astype(int)
+    return {
+        "roc_auc": roc_auc_score(y_true, y_prob),
+        "pr_auc": average_precision_score(y_true, y_prob),
+        "f1_score": f1_score(y_true, y_pred, zero_division=0),
+        "precision": precision_score(y_true, y_pred, zero_division=0),
+        "recall": recall_score(y_true, y_pred, zero_division=0),
     }
-    return metrics, confusion_matrix(labels, predictions, labels=[0, 1]).tolist()
 
 
-def main(df=None, batch_tag=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--remote', action='store_true', help='Log to team MLflow server')
-    parser.add_argument('--csv', type=Path, help='Read local cleaned CSV instead of RDS')
-    args = parser.parse_args() if df is None else parser.parse_args([])
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    output = ROOT / 'results' / f'jaime_{stamp}'
-    output.mkdir(parents=True, exist_ok=True)
+def main():
+    df = load_data_from_rds()
+    df = df.replace([np.inf, -np.inf], np.nan)
 
-    if df is None:
-        if args.csv:
-            df = pd.read_csv(args.csv, low_memory=False)
-        else:
-            sys.path.insert(0, str(ROOT / 'database'))
-            from db_config import get_db_engine
-            engine = get_db_engine()
-            print('Loading cleaned_fraud_data from RDS...', flush=True)
-            try:
-                with engine.connect() as connection:
-                    df = pd.read_sql('SELECT * FROM cleaned_fraud_data', connection)
-            finally:
-                engine.dispose()
-    print(f'Loaded {len(df):,} rows.', flush=True)
-    y = pd.to_numeric(df['is_fraud'], errors='raise')
-    if y.isna().any() or set(y.unique()) != {0, 1}:
-        raise ValueError('is_fraud must contain both 0 and 1, with no missing labels.')
-    y = y.astype(int)
-    X = df[BASE_FEATURES].copy()
-    X['mobile_verified'] = X['mobile_verified'].replace({
-        True: 1, False: 0, 'True': 1, 'False': 0, 'TRUE': 1, 'FALSE': 0,
-    })
-    for col in X.columns:
+    y = pd.to_numeric(df["is_fraud"], errors="raise").astype(int)
+    X_v1 = df[BASE_FEATURES].copy()
+    X_v1["mobile_verified"] = X_v1["mobile_verified"].replace(
+        {True: 1, False: 0, "True": 1, "False": 0, "TRUE": 1, "FALSE": 0}
+    )
+    for col in X_v1.columns:
         if col not in CATEGORICAL:
-            X[col] = pd.to_numeric(X[col], errors='raise')
-    X = X.replace([np.inf, -np.inf], np.nan)
-    train, test = train_test_split(np.arange(len(X)), test_size=0.2,
-                                   stratify=y, random_state=42)
-    y_train, y_test = y.iloc[train], y.iloc[test]
-    engineered = engineer_features(X)
-    batch_tag = batch_tag or os.getenv('DATA_BATCH_TAG', 'base')
-    results = []
+            X_v1[col] = pd.to_numeric(X_v1[col], errors="raise")
+    X_v1 = X_v1.replace([np.inf, -np.inf], np.nan)
 
-    # A separate local store keeps recording available while the shared server is down.
-    uri = os.getenv('MLFLOW_TRACKING_URI') if args.remote else f'sqlite:///{(ROOT / "mlflow_jaime.db").as_posix()}'
-    if not uri:
-        raise ValueError('Set MLFLOW_TRACKING_URI in .env before using --remote.')
-    mlflow.set_tracking_uri(uri)
-    mlflow.set_experiment('SP-Buy-Fraud-Detection-Jaime')
+    X_train_v1, X_test_v1, y_train, y_test = train_test_split(
+        X_v1, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-    for version, features in [('v1_baseline', X), ('v2_optimized', engineered)]:
-        print(f'\nTraining {version}...', flush=True)
-        model = build_pipeline(features, n_estimators=100, max_depth=10,
-                               min_samples_leaf=20, class_weight=None)
-        with mlflow.start_run(run_name=f'{version}_extratrees_jaime_{batch_tag}_{stamp}'):
-            mlflow.set_tags({'author': 'jaime', 'model_version': version,
-                             'data_batch': batch_tag, 'recording_mode': 'remote' if args.remote else 'local'})
-            mlflow.log_params({'model_type': 'ExtraTreesClassifier', 'random_state': 42,
-                               'test_size': 0.2, 'threshold': 0.5,
-                               'feature_count': features.shape[1],
-                               'current_order_refunds_excluded': True})
-            mlflow.log_dict({'columns': features.columns.tolist()}, 'feature_columns.json')
-            if version == 'v2_optimized':
-                model.set_params(clf__class_weight='balanced')
-                search = RandomizedSearchCV(
-                    model,
-                    {'clf__n_estimators': [120, 180], 'clf__max_depth': [12, 20, None],
-                     'clf__min_samples_leaf': [5, 15, 30],
-                     'clf__max_features': ['sqrt', 0.7]},
-                    n_iter=4, scoring='average_precision',
-                    cv=StratifiedKFold(3, shuffle=True, random_state=42),
-                    random_state=42, n_jobs=1, verbose=1,
-                )
-                search.fit(features.iloc[train], y_train)
-                model = search.best_estimator_
-                mlflow.log_metric('cv_average_precision', search.best_score_)
-            else:
-                model.fit(features.iloc[train], y_train)
-            mlflow.log_params({key: value for key, value in model.get_params().items()
-                               if key.startswith('clf__')})
-            metrics, matrix = evaluate(model, features.iloc[test], y_test)
-            results.append({'version': version, **metrics})
-            # Save results before remote artifact uploads so metrics remain available.
-            pd.DataFrame(results).to_csv(output / 'model_comparison.csv', index=False)
-            (output / f'{version}_confusion_matrix.json').write_text(json.dumps(
-                {'labels': [0, 1], 'rows': 'actual', 'columns': 'predicted', 'matrix': matrix}, indent=2))
-            mlflow.log_metrics(metrics)
-            mlflow.log_dict({'labels': [0, 1], 'matrix': matrix}, 'confusion_matrix.json')
-            mlflow.sklearn.log_model(model, artifact_path='model', serialization_format='cloudpickle')
-            print({name: round(value, 4) for name, value in metrics.items()}, flush=True)
-    print('\nComparison:\n', pd.DataFrame(results).to_string(index=False))
-    print(f'\nResults saved in: {output}')
-    if not args.remote:
-        print('Runs recorded locally. They are NOT yet on the shared server.')
-        print('When the server works, rerun with --remote to record team-visible runs.')
+    # =========================================================
+    # MODEL V1: Baseline Extra Trees (Base Features)
+    # =========================================================
+    pipeline_v1 = build_pipeline(
+        X_train_v1,
+        n_estimators=100,
+        max_depth=10,
+        min_samples_leaf=20,
+        class_weight=None,
+    )
+
+    with mlflow.start_run(run_name="v1_baseline_extratrees_jaime"):
+        mlflow.set_tag("author", "JaimeHoyr")
+        mlflow.set_tag("model_version", "v1_baseline")
+        mlflow.log_param("model_type", "ExtraTreesClassifier")
+        mlflow.log_param("feature_set", f"base_{X_v1.shape[1]}_features")
+        mlflow.log_param("class_weight", "None")
+
+        print("\nTraining Model v1 (Baseline Extra Trees)...")
+        pipeline_v1.fit(X_train_v1, y_train)
+        y_prob_v1 = pipeline_v1.predict_proba(X_test_v1)[:, 1]
+        metrics_v1 = evaluate_predictions(y_test, y_prob_v1)
+
+        mlflow.log_metrics(metrics_v1)
+        mlflow.sklearn.log_model(pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle")
+        print("Model v1 Metrics:", {k: round(v, 4) for k, v in metrics_v1.items()})
+
+    # =========================================================
+    # MODEL V2: Feature-Engineered + Tuned Extra Trees
+    # =========================================================
+    X_v2 = engineer_additional_features(X_v1)
+    X_train_v2, X_test_v2, _, _ = train_test_split(
+        X_v2, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    base_et = build_pipeline(X_train_v2, class_weight="balanced")
+
+    param_dist = {
+        "clf__n_estimators": [120, 180],
+        "clf__max_depth": [12, 20, None],
+        "clf__min_samples_leaf": [5, 15, 30],
+        "clf__max_features": ["sqrt", 0.7],
+    }
+
+    search = RandomizedSearchCV(
+        base_et,
+        param_distributions=param_dist,
+        n_iter=4,
+        scoring="average_precision",
+        cv=StratifiedKFold(3, shuffle=True, random_state=42),
+        random_state=42,
+        n_jobs=-1,
+        verbose=1,
+    )
+
+    with mlflow.start_run(run_name="v2_tuned_extratrees_fe_jaime"):
+        mlflow.set_tag("author", "JaimeHoyr")
+        mlflow.set_tag("model_version", "v2_optimized_fe")
+        mlflow.log_param("model_type", "ExtraTreesClassifier")
+        mlflow.log_param("feature_set", f"engineered_{X_v2.shape[1]}_features")
+        mlflow.log_param("tuning_metric", "average_precision (PR-AUC)")
+
+        print("\nTuning & Training Model v2 (Feature Engineering + Extra Trees)...")
+        search.fit(X_train_v2, y_train)
+        best_model_v2 = search.best_estimator_
+
+        mlflow.log_params(search.best_params_)
+        y_prob_v2 = best_model_v2.predict_proba(X_test_v2)[:, 1]
+        metrics_v2 = evaluate_predictions(y_test, y_prob_v2)
+
+        mlflow.log_metrics(metrics_v2)
+        mlflow.sklearn.log_model(best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle")
+        print("Best Params v2:", search.best_params_)
+        print("Model v2 Metrics:", {k: round(v, 4) for k, v in metrics_v2.items()})
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
