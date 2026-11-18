@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # Point to deployed MLflow tracking URI (falls back to local server if not set in .env)
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://spbuy-mlflow-v2-env.eba-vg28gb2y.us-east-1.elasticbeanstalk.com/")
 EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "SP-Buy-Fraud-Detection-Ernest")
 
 
