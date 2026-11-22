@@ -20,7 +20,6 @@ from sklearn.metrics import (
     recall_score,
 )
 
-
 # Allow importing db_config from ../database
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database")))
 from db_config import get_db_engine  # type: ignore
@@ -28,10 +27,11 @@ from db_config import get_db_engine  # type: ignore
 warnings.filterwarnings("ignore")
 load_dotenv()
 
-# Point to your deployed MLflow tracking URI (falls back to local ./mlruns if not in .env)
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-mlflow.set_experiment("SP-Buy-Fraud-Detection-Jaime")
+MLFLOW_TRACKING_URI = os.getenv(
+    "MLFLOW_TRACKING_URI",
+    "http://spbuy-mlflow-v2-env.eba-vg28gb2y.us-east-1.elasticbeanstalk.com/",
+)
+EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME_JAIME", "SP-Buy-Fraud-Detection-Jaime")
 
 CATEGORICAL = ["country_code", "collect_type", "payment_method"]
 BASE_FEATURES = CATEGORICAL + [
@@ -49,7 +49,7 @@ BASE_FEATURES = CATEGORICAL + [
 ]
 
 
-def load_data_from_rds():
+def load_data_from_rds() -> pd.DataFrame:
     """Fetches cleaned_fraud_data from AWS RDS MySQL."""
     print("Querying cleaned_fraud_data from AWS RDS MySQL...")
     engine = get_db_engine()
@@ -77,16 +77,11 @@ def engineer_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-def build_pipeline(features: pd.DataFrame, **parameters) -> Pipeline:
+def build_pipeline(features: pd.DataFrame, n_jobs: int = -1, **parameters) -> Pipeline:
     """Builds preprocessing and ExtraTreesClassifier pipeline."""
     num_cols = [c for c in features.columns if c not in CATEGORICAL]
 
-    num_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-        ]
-    )
-
+    num_transformer = Pipeline(steps=[("imputer", SimpleImputer(strategy="median"))])
     cat_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
@@ -104,12 +99,12 @@ def build_pipeline(features: pd.DataFrame, **parameters) -> Pipeline:
     return Pipeline(
         steps=[
             ("prep", preprocessor),
-            ("clf", ExtraTreesClassifier(random_state=42, n_jobs=-1, **parameters)),
+            ("clf", ExtraTreesClassifier(random_state=42, n_jobs=n_jobs, **parameters)),
         ]
     )
 
 
-def evaluate_predictions(y_true, y_prob, threshold=0.5):
+def evaluate_predictions(y_true, y_prob, threshold=0.5) -> dict:
     """Computes fraud-appropriate classification metrics."""
     y_pred = (y_prob >= threshold).astype(int)
     return {
@@ -121,8 +116,20 @@ def evaluate_predictions(y_true, y_prob, threshold=0.5):
     }
 
 
-def main():
-    df = load_data_from_rds()
+def main(df: pd.DataFrame = None, batch_tag: str = None):
+    """
+    Runs Jaime's v1 and v2 ML experiments.
+    Can be called standalone OR imported by the automated ETL pipeline with a pre-loaded df and batch_tag.
+    """
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+
+    if batch_tag is None:
+        batch_tag = os.getenv("DATA_BATCH_TAG", "base")
+
+    if df is None:
+        df = load_data_from_rds()
+
     df = df.replace([np.inf, -np.inf], np.nan)
 
     y = pd.to_numeric(df["is_fraud"], errors="raise").astype(int)
@@ -144,26 +151,31 @@ def main():
     # =========================================================
     pipeline_v1 = build_pipeline(
         X_train_v1,
+        n_jobs=-1,
         n_estimators=100,
         max_depth=10,
         min_samples_leaf=20,
         class_weight=None,
     )
 
-    with mlflow.start_run(run_name="v1_baseline_extratrees_jaime"):
+    run_name_v1 = f"v1_baseline_extratrees_jaime_{batch_tag}"
+    with mlflow.start_run(run_name=run_name_v1):
         mlflow.set_tag("author", "JaimeHoyr")
         mlflow.set_tag("model_version", "v1_baseline")
+        mlflow.set_tag("data_batch", batch_tag)
         mlflow.log_param("model_type", "ExtraTreesClassifier")
         mlflow.log_param("feature_set", f"base_{X_v1.shape[1]}_features")
         mlflow.log_param("class_weight", "None")
 
-        print("\nTraining Model v1 (Baseline Extra Trees)...")
+        print(f"\nTraining {run_name_v1}...")
         pipeline_v1.fit(X_train_v1, y_train)
         y_prob_v1 = pipeline_v1.predict_proba(X_test_v1)[:, 1]
         metrics_v1 = evaluate_predictions(y_test, y_prob_v1)
 
         mlflow.log_metrics(metrics_v1)
-        mlflow.sklearn.log_model(pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle")
+        mlflow.sklearn.log_model(
+            pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle"
+        )
         print("Model v1 Metrics:", {k: round(v, 4) for k, v in metrics_v1.items()})
 
     # =========================================================
@@ -174,12 +186,14 @@ def main():
         X_v2, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    base_et = build_pipeline(X_train_v2, class_weight="balanced")
+    # Keep inner n_jobs=1 so RandomizedSearchCV(n_jobs=-1) doesn't cause Windows CPU thrashing,
+    # and cap max_depth at 20 (avoiding None) so the .pkl artifact stays small for fast S3 upload.
+    base_et = build_pipeline(X_train_v2, n_jobs=1, class_weight="balanced")
 
     param_dist = {
-        "clf__n_estimators": [120, 180],
-        "clf__max_depth": [12, 20, None],
-        "clf__min_samples_leaf": [5, 15, 30],
+        "clf__n_estimators": [120, 160],
+        "clf__max_depth": [12, 16, 20],
+        "clf__min_samples_leaf": [10, 20, 30],
         "clf__max_features": ["sqrt", 0.7],
     }
 
@@ -194,14 +208,16 @@ def main():
         verbose=1,
     )
 
-    with mlflow.start_run(run_name="v2_tuned_extratrees_fe_jaime"):
+    run_name_v2 = f"v2_tuned_extratrees_fe_jaime_{batch_tag}"
+    with mlflow.start_run(run_name=run_name_v2):
         mlflow.set_tag("author", "JaimeHoyr")
         mlflow.set_tag("model_version", "v2_optimized_fe")
+        mlflow.set_tag("data_batch", batch_tag)
         mlflow.log_param("model_type", "ExtraTreesClassifier")
         mlflow.log_param("feature_set", f"engineered_{X_v2.shape[1]}_features")
         mlflow.log_param("tuning_metric", "average_precision (PR-AUC)")
 
-        print("\nTuning & Training Model v2 (Feature Engineering + Extra Trees)...")
+        print(f"\nTuning & Training {run_name_v2}...")
         search.fit(X_train_v2, y_train)
         best_model_v2 = search.best_estimator_
 
@@ -210,7 +226,9 @@ def main():
         metrics_v2 = evaluate_predictions(y_test, y_prob_v2)
 
         mlflow.log_metrics(metrics_v2)
-        mlflow.sklearn.log_model(best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle")
+        mlflow.sklearn.log_model(
+            best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle"
+        )
         print("Best Params v2:", search.best_params_)
         print("Model v2 Metrics:", {k: round(v, 4) for k, v in metrics_v2.items()})
 
