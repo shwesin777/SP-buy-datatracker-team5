@@ -21,7 +21,6 @@ from sklearn.metrics import (
     recall_score,
 )
 
-
 # Allow importing db_config from ../database
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database")))
 from db_config import get_db_engine  # type: ignore
@@ -29,13 +28,14 @@ from db_config import get_db_engine  # type: ignore
 warnings.filterwarnings("ignore")
 load_dotenv()
 
-# Point to your deployed MLflow tracking URI (falls back to local ./mlruns if not in .env)
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-mlflow.set_experiment("SP-Buy-Fraud-Detection-Shwesin")
+MLFLOW_TRACKING_URI = os.getenv(
+    "MLFLOW_TRACKING_URI",
+    "http://spbuy-mlflow-v2-env.eba-vg28gb2y.us-east-1.elasticbeanstalk.com/",
+)
+EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME_SHWESIN", "SP-Buy-Fraud-Detection-Shwesin")
 
 
-def load_data_from_rds():
+def load_data_from_rds() -> pd.DataFrame:
     """Fetches cleaned_fraud_data from AWS RDS MySQL."""
     print("Querying cleaned_fraud_data from AWS RDS MySQL...")
     engine = get_db_engine()
@@ -50,7 +50,6 @@ def engineer_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     eps = 1e-5
 
-    # Ratio & behavioral velocity features
     df["refund_to_order_ratio"] = df["refund_value"] / (df["order_value"] + eps)
     df["cancel_rate_50d"] = df["num_cancelled_orders_last_50days"] / (df["num_orders_last_50days"] + 1.0)
     df["refund_rate_50d"] = df["num_refund_orders_last_50days"] / (df["num_orders_last_50days"] + 1.0)
@@ -63,7 +62,7 @@ def engineer_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def evaluate_predictions(y_true, y_prob, threshold=0.5):
+def evaluate_predictions(y_true, y_prob, threshold=0.5) -> dict:
     """Computes fraud-appropriate classification metrics."""
     y_pred = (y_prob >= threshold).astype(int)
     return {
@@ -75,16 +74,24 @@ def evaluate_predictions(y_true, y_prob, threshold=0.5):
     }
 
 
-def main():
-    df = load_data_from_rds()
+def main(df: pd.DataFrame = None, batch_tag: str = None):
+    """
+    Runs Shwesin's v1 and v2 ML experiments.
+    Can be called standalone OR imported by the automated ETL pipeline with a pre-loaded df and batch_tag.
+    """
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_NAME)
 
-    # Replace any inf values with NaN so imputers handle them cleanly
+    if batch_tag is None:
+        batch_tag = os.getenv("DATA_BATCH_TAG", "base")
+
+    if df is None:
+        df = load_data_from_rds()
+
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # Drop identifiers & raw datetime strings not used directly as features
     drop_cols = ["order_id", "customer_id", "order_date", "first_order_datetime", "is_fraud"]
     target_col = "is_fraud"
-
     cat_cols = ["country_code", "collect_type", "payment_method"]
 
     # =========================================================
@@ -99,24 +106,24 @@ def main():
 
     num_cols_v1 = [c for c in X_train_v1.columns if c not in cat_cols]
 
-    num_transformer_v1 = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
-    )
-
-    cat_transformer_v1 = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
-
     preprocessor_v1 = ColumnTransformer(
         transformers=[
-            ("num", num_transformer_v1, num_cols_v1),
-            ("cat", cat_transformer_v1, cat_cols),
+            (
+                "num",
+                Pipeline([
+                    ("imputer", SimpleImputer(strategy="median")),
+                    ("scaler", StandardScaler()),
+                ]),
+                num_cols_v1,
+            ),
+            (
+                "cat",
+                Pipeline([
+                    ("imputer", SimpleImputer(strategy="most_frequent")),
+                    ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                ]),
+                cat_cols,
+            ),
         ]
     )
 
@@ -127,20 +134,24 @@ def main():
         ]
     )
 
-    with mlflow.start_run(run_name="v1_baseline_logreg_shwesin"):
+    run_name_v1 = f"v1_baseline_logreg_shwesin_{batch_tag}"
+    with mlflow.start_run(run_name=run_name_v1):
         mlflow.set_tag("author", "shwesin777")
         mlflow.set_tag("model_version", "v1_baseline")
+        mlflow.set_tag("data_batch", batch_tag)
         mlflow.log_param("model_type", "LogisticRegression")
-        mlflow.log_param("feature_set", "cleaned_base_34_features")
+        mlflow.log_param("feature_set", f"cleaned_base_{X_v1.shape[1]}_features")
         mlflow.log_param("class_weight", "balanced")
 
-        print("\nTraining Model v1 (Baseline Logistic Regression)...")
+        print(f"\nTraining {run_name_v1}...")
         pipeline_v1.fit(X_train_v1, y_train)
         y_prob_v1 = pipeline_v1.predict_proba(X_test_v1)[:, 1]
         metrics_v1 = evaluate_predictions(y_test, y_prob_v1)
 
         mlflow.log_metrics(metrics_v1)
-        mlflow.sklearn.log_model(pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle")
+        mlflow.sklearn.log_model(
+            pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle"
+        )
         print("Model v1 Metrics:", {k: round(v, 4) for k, v in metrics_v1.items()})
 
     # =========================================================
@@ -195,14 +206,16 @@ def main():
         verbose=1,
     )
 
-    with mlflow.start_run(run_name="v2_tuned_histgb_fe_shwesin"):
+    run_name_v2 = f"v2_tuned_histgb_fe_shwesin_{batch_tag}"
+    with mlflow.start_run(run_name=run_name_v2):
         mlflow.set_tag("author", "shwesin777")
         mlflow.set_tag("model_version", "v2_optimized_fe")
+        mlflow.set_tag("data_batch", batch_tag)
         mlflow.log_param("model_type", "HistGradientBoostingClassifier")
-        mlflow.log_param("feature_set", "engineered_40_features")
+        mlflow.log_param("feature_set", f"engineered_{X_v2.shape[1]}_features")
         mlflow.log_param("tuning_metric", "average_precision (PR-AUC)")
 
-        print("\nTuning & Training Model v2 (Feature Engineering + HistGradientBoosting)...")
+        print(f"\nTuning & Training {run_name_v2}...")
         search.fit(X_train_v2, y_train)
         best_model_v2 = search.best_estimator_
 
@@ -211,7 +224,9 @@ def main():
         metrics_v2 = evaluate_predictions(y_test, y_prob_v2)
 
         mlflow.log_metrics(metrics_v2)
-        mlflow.sklearn.log_model(best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle")
+        mlflow.sklearn.log_model(
+            best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle"
+        )
         print("Best Params v2:", search.best_params_)
         print("Model v2 Metrics:", {k: round(v, 4) for k, v in metrics_v2.items()})
 
