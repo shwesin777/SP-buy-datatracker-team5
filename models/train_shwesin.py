@@ -30,7 +30,7 @@ load_dotenv()
 
 MLFLOW_TRACKING_URI = os.getenv(
     "MLFLOW_TRACKING_URI",
-    "http://spbuy-mlflow-v2-env.eba-vg28gb2y.us-east-1.elasticbeanstalk.com/",
+    "http://spbuy-mlflow-env.eba-yspwy5bb.us-east-1.elasticbeanstalk.com/",
 )
 EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME_SHWESIN", "SP-Buy-Fraud-Detection-Shwesin")
 
