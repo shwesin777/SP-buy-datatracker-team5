@@ -151,15 +151,15 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     # =========================================================
     pipeline_v1 = build_pipeline(
         X_train_v1,
-        n_jobs=-1,
-        n_estimators=100,
-        max_depth=10,
+        n_jobs=1,
+        n_estimators=30,
+        max_depth=8,
         min_samples_leaf=20,
         class_weight=None,
     )
 
     run_name_v1 = f"v1_baseline_extratrees_jaime_{batch_tag}"
-    with mlflow.start_run(run_name=run_name_v1):
+    if False:  # skipped v1 baseline for fast ETL retraining
         mlflow.set_tag("author", "JaimeHoyr")
         mlflow.set_tag("model_version", "v1_baseline")
         mlflow.set_tag("data_batch", batch_tag)
@@ -173,7 +173,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
         metrics_v1 = evaluate_predictions(y_test, y_prob_v1)
 
         mlflow.log_metrics(metrics_v1)
-        mlflow.sklearn.log_model(
+        None and mlflow.sklearn.log_model(
             pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle"
         )
         print("Model v1 Metrics:", {k: round(v, 4) for k, v in metrics_v1.items()})
@@ -186,13 +186,13 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
         X_v2, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # Keep inner n_jobs=1 so RandomizedSearchCV(n_jobs=-1) doesn't cause Windows CPU thrashing,
+    # Keep inner n_jobs=1 so RandomizedSearchCV(n_jobs=1) doesn't cause Windows CPU thrashing,
     # and cap max_depth at 20 (avoiding None) so the .pkl artifact stays small for fast S3 upload.
     base_et = build_pipeline(X_train_v2, n_jobs=1, class_weight="balanced")
 
     param_dist = {
-        "clf__n_estimators": [120, 160],
-        "clf__max_depth": [12, 16, 20],
+        "clf__n_estimators": [30],
+        "clf__max_depth": [8],
         "clf__min_samples_leaf": [10, 20, 30],
         "clf__max_features": ["sqrt", 0.7],
     }
@@ -200,11 +200,11 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     search = RandomizedSearchCV(
         base_et,
         param_distributions=param_dist,
-        n_iter=4,
+        n_iter=1,
         scoring="average_precision",
-        cv=StratifiedKFold(3, shuffle=True, random_state=42),
+        cv=StratifiedKFold(2, shuffle=True, random_state=42),
         random_state=42,
-        n_jobs=-1,
+        n_jobs=1,
         verbose=1,
     )
 
@@ -226,7 +226,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
         metrics_v2 = evaluate_predictions(y_test, y_prob_v2)
 
         mlflow.log_metrics(metrics_v2)
-        mlflow.sklearn.log_model(
+        None and mlflow.sklearn.log_model(
             best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle"
         )
         print("Best Params v2:", search.best_params_)
