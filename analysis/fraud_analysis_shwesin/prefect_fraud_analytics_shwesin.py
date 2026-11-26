@@ -51,16 +51,18 @@ def task_payment_collect_fraud() -> pd.DataFrame:
 
     logger.info("\n=== Q1: Fraud Exposure by Payment Method & Collect Type ===\n" + df_q1.to_string(index=False))
 
-    plt.figure(figsize=(10, 5))
-    ax1 = sns.barplot(data=df_q1, x="payment_method", y="fraud_rate_pct", hue="collect_type")
-    ax1.set_title("Fraud Rate (%) by Payment Method & Collection Type", fontsize=13, fontweight="bold")
-    ax1.set_ylabel("Fraud Rate (%)")
-    ax1.set_xlabel("Payment Method")
+    top_methods = df_q1.groupby("payment_method")["fraud_rate_pct"].max().nlargest(10).index
+    df_q1_top = df_q1[df_q1["payment_method"].isin(top_methods)]
+
+    plt.figure(figsize=(10, 6))
+    ax1 = sns.barplot(data=df_q1_top, y="payment_method", x="fraud_rate_pct", hue="collect_type", order=top_methods)
+    ax1.set_title("Top 10 Payment Methods by Fraud Rate (%) & Collection Type", fontsize=13, fontweight="bold")
+    ax1.set_xlabel("Fraud Rate (%)")
+    ax1.set_ylabel("Payment Method")
     plt.legend(title="Collect Type")
     plt.tight_layout()
     plt.savefig(f"{OUTPUT_DIR}/q1_payment_collect_fraud.png", dpi=300)
     plt.close()
-    return df_q1
 
 
 @task(name="Query 2: High-Risk Customer Account Clusters", retries=2, retry_delay_seconds=5)
