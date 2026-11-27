@@ -12,6 +12,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "d
 from db_config import get_db_engine  # type: ignore
 
 load_dotenv()
+
+os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
+
 OUTPUT_DIR = "fraud_analysis_outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
