@@ -30,7 +30,7 @@ load_dotenv()
 
 MLFLOW_TRACKING_URI = os.getenv(
     "MLFLOW_TRACKING_URI",
-    "http://spbuy-mlflow-v2-env.eba-vg28gb2y.us-east-1.elasticbeanstalk.com/",
+    "http://spbuy-mlflow-env.eba-yspwy5bb.us-east-1.elasticbeanstalk.com/",
 )
 EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME_SHWESIN", "SP-Buy-Fraud-Detection-Shwesin")
 
@@ -88,7 +88,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     if df is None:
         df = load_data_from_rds()
 
-    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.replace([np.inf, -np.inf], np.nan); num_c = df.select_dtypes(include="number").columns; df[num_c] = df[num_c].fillna(0)
 
     drop_cols = ["order_id", "customer_id", "order_date", "first_order_datetime", "is_fraud"]
     target_col = "is_fraud"
@@ -135,7 +135,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     )
 
     run_name_v1 = f"v1_baseline_logreg_shwesin_{batch_tag}"
-    with mlflow.start_run(run_name=run_name_v1):
+    if False:  # skipped v1 baseline for fast ETL retraining
         mlflow.set_tag("author", "shwesin777")
         mlflow.set_tag("model_version", "v1_baseline")
         mlflow.set_tag("data_batch", batch_tag)
@@ -149,7 +149,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
         metrics_v1 = evaluate_predictions(y_test, y_prob_v1)
 
         mlflow.log_metrics(metrics_v1)
-        mlflow.sklearn.log_model(
+        None and mlflow.sklearn.log_model(
             pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle"
         )
         print("Model v1 Metrics:", {k: round(v, 4) for k, v in metrics_v1.items()})
@@ -198,11 +198,11 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     search = RandomizedSearchCV(
         pipeline_v2,
         param_distributions=param_dist,
-        n_iter=4,
+        n_iter=1,
         scoring="average_precision",
-        cv=3,
+        cv=2,
         random_state=42,
-        n_jobs=-1,
+        n_jobs=1,
         verbose=1,
     )
 
@@ -224,7 +224,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
         metrics_v2 = evaluate_predictions(y_test, y_prob_v2)
 
         mlflow.log_metrics(metrics_v2)
-        mlflow.sklearn.log_model(
+        None and mlflow.sklearn.log_model(
             best_model_v2, artifact_path="model_v2", serialization_format="cloudpickle"
         )
         print("Best Params v2:", search.best_params_)

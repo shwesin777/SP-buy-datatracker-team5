@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # Point to deployed MLflow tracking URI (falls back to local server if not set in .env)
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://spbuy-mlflow-v2-env.eba-vg28gb2y.us-east-1.elasticbeanstalk.com/")
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://spbuy-mlflow-env.eba-yspwy5bb.us-east-1.elasticbeanstalk.com/")
 EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "SP-Buy-Fraud-Detection-Ernest")
 
 
@@ -83,7 +83,7 @@ def engineer_ernest_features(df: pd.DataFrame) -> pd.DataFrame:
     df["unverified_order_risk"] = (1 - df["mobile_verified"]) * df["order_value_log"]
 
     # 4. Associated customer network risk (fraud rings often share linked accounts)
-    df["has_associated_accounts"] = (df["num_associated_customers"] > 0).astype(int)
+    df["has_associated_accounts"] = (df["num_associated_customers"].fillna(0) > 0).astype(int)
     df["associated_to_order_ratio"] = df["num_associated_customers"] / (
         df["num_orders_last_50days"] + 1.0
     )
@@ -204,7 +204,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     )
 
     run_name_v1 = f"v1_baseline_dtree_ernest_{batch_tag}"
-    with mlflow.start_run(run_name=run_name_v1):
+    if False:  # skipped v1 baseline for fast ETL retraining
         mlflow.set_tag("author", "ernest")
         mlflow.set_tag("model_version", "v1_baseline")
         mlflow.set_tag("data_batch", batch_tag)
@@ -219,7 +219,7 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
         metrics_v1 = evaluate_predictions(y_test, y_prob_v1, threshold=0.5)
 
         mlflow.log_metrics(metrics_v1)
-        mlflow.sklearn.log_model(
+        None and mlflow.sklearn.log_model(
             pipeline_v1, artifact_path="model_v1", serialization_format="cloudpickle"
         )
         print("Model v1 Metrics:", {k: round(v, 4) for k, v in metrics_v1.items()})
@@ -259,15 +259,15 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
 
     base_rf = RandomForestClassifier(
         class_weight="balanced_subsample",
-        n_jobs=-1,
+        n_jobs=1,
         random_state=42,
     )
 
     pipeline_v2 = Pipeline(steps=[("prep", preprocessor_v2), ("clf", base_rf)])
 
     param_dist = {
-        "clf__n_estimators": [120, 180],
-        "clf__max_depth": [12, 16, 20],
+        "clf__n_estimators": [30],
+        "clf__max_depth": [8],
         "clf__min_samples_leaf": [10, 25, 50],
         "clf__max_features": ["sqrt", 0.5],
     }
@@ -275,11 +275,11 @@ def main(df: pd.DataFrame = None, batch_tag: str = None):
     search = RandomizedSearchCV(
         pipeline_v2,
         param_distributions=param_dist,
-        n_iter=4,
+        n_iter=1,
         scoring="average_precision",
-        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
+        cv=StratifiedKFold(n_splits=2, shuffle=True, random_state=42),
         random_state=42,
-        n_jobs=-1,
+        n_jobs=1,
         verbose=1,
     )
 

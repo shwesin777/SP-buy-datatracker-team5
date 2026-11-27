@@ -1,14 +1,14 @@
 import argparse
+import os
+import sys
 from pathlib import Path
 from shutil import copyfileobj
 from tempfile import TemporaryDirectory
+from time import perf_counter
 from urllib.request import urlopen
 
 from clean_data import prepare_batch
 from validate_batch import validate_batch
-import subprocess
-import sys
-from time import perf_counter
 
 
 def prepare_batch_from_urls(customers_url, orders_url, labels_url):
@@ -30,6 +30,7 @@ def prepare_batch_from_urls(customers_url, orders_url, labels_url):
         print("Downloaded batch passed validation.")
 
         return prepare_batch(folder, "incoming")
+
 
 def count_existing_orders(cleaned):
     from sqlalchemy import column, func, select, table, tuple_
@@ -57,6 +58,7 @@ def count_existing_orders(cleaned):
             return connection.execute(query).scalar_one()
     finally:
         engine.dispose()
+
 
 def load_batch_to_rds(cleaned):
     from database.db_config import get_db_engine
@@ -86,24 +88,43 @@ def load_batch_to_rds(cleaned):
         engine.dispose()
 
     return len(rows)
-def retrain_models():
-    repo_dir = Path(__file__).resolve().parent
 
-    for script in ("train_ernest.py", "train_jaime.py", "train_shwesin.py"):
+
+def _run_model_module(module_name, func_name, df, batch_tag):
+    import importlib
+
+    mod = importlib.import_module(f"models.{module_name}")
+    fn = getattr(mod, func_name, None) or getattr(mod, "main")
+    fn(df, batch_tag)
+
+
+def retrain_models(df, batch_tag="batch_etl"):
+    os.environ["DATA_BATCH_TAG"] = batch_tag
+    os.environ["PYTHONUTF8"] = "1"
+
+    model_df = df.copy()
+    for col in model_df.select_dtypes(include=["boolean", "Int8", "Int16", "Int32", "Int64", "Float32", "Float64"]).columns:
+        model_df[col] = model_df[col].astype("float64")
+
+    models_to_run = [
+        ("train_ernest", "train_ernest"),
+        ("train_jaime", "train_jaime"),
+        ("train_shwesin", "train_shwesin"),
+    ]
+
+    for module_name, func_name in models_to_run:
         started = perf_counter()
-        print(f"Running {script}...", flush=True)
-        subprocess.run(
-            [sys.executable, str(repo_dir / "models" / script)],
-            cwd=repo_dir,
-            check=True,
-        )
-        print(f"{script} finished in {perf_counter() - started:.1f}s.", flush=True)
+        print(f"Running {module_name}.py (batch_tag={batch_tag})...", flush=True)
+        _run_model_module(module_name, func_name, model_df, batch_tag)
+        print(f"{module_name}.py finished in {perf_counter() - started:.1f}s.", flush=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--customers-url", required=True)
     parser.add_argument("--orders-url", required=True)
     parser.add_argument("--labels-url", required=True)
+    parser.add_argument("--batch-tag", default="test")
     parser.add_argument("--load-rds", action="store_true")
     parser.add_argument("--retrain", action="store_true")
     args = parser.parse_args()
@@ -125,5 +146,5 @@ if __name__ == "__main__":
         if cleaned.empty or existing_orders != len(cleaned):
             raise SystemExit("Retraining requires a nonempty batch already loaded in RDS.")
 
-        retrain_models()
+        retrain_models(cleaned, batch_tag=args.batch_tag)
         print(f"Pipeline finished in {perf_counter() - pipeline_started:.1f}s.")
