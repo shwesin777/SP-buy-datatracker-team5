@@ -200,4 +200,4 @@ def run_jaime_fraud_analytics_flow():
 
 
 if __name__ == "__main__":
-    run_jaime_fraud_analytics_flow()
+    fraud_analytics_flow.serve(name="jaime-fraud-analytics")
