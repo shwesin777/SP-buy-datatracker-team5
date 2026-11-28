@@ -3,6 +3,8 @@ import time
 from urllib.parse import quote_plus
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.gridspec as gridspec
+import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -16,7 +18,9 @@ load_dotenv()
 os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
 
 OUTPUT_DIR = "analysis/fraud_analysis_shwesin"
+TEAM_OUTPUT_DIR = "fraud_analysis_outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(TEAM_OUTPUT_DIR, exist_ok=True)
 sns.set_theme(style="whitegrid")
 
 
@@ -63,6 +67,7 @@ def task_payment_collect_fraud() -> pd.DataFrame:
     plt.tight_layout()
     plt.savefig(f"{OUTPUT_DIR}/q1_payment_collect_fraud.png", dpi=300)
     plt.close()
+    return df_q1
 
 
 @task(name="Query 2: High-Risk Customer Account Clusters", retries=2, retry_delay_seconds=5)
@@ -156,18 +161,47 @@ def task_refund_abuse_patterns() -> pd.DataFrame:
     return df_q3
 
 
+@task(name="Generate Unified Dashboard PNG", retries=1)
+def task_generate_dashboard_png() -> str:
+    logger = get_run_logger()
+    q1_img = mpimg.imread(f"{OUTPUT_DIR}/q1_payment_collect_fraud.png")
+    q2_img = mpimg.imread(f"{OUTPUT_DIR}/q2_customer_risk_clusters.png")
+    q3_img = mpimg.imread(f"{OUTPUT_DIR}/q3_refund_abuse_patterns.png")
+
+    fig = plt.figure(figsize=(16, 11), facecolor="#f8fafc")
+    fig.suptitle(
+        "SP-buy Trust & Safety — Fraud Exposure, Account Clusters & Refund Abuse Dashboard (Shwe Sin)",
+        fontsize=16,
+        fontweight="bold",
+        color="#0f172a",
+        y=0.97,
+    )
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.12, wspace=0.08, top=0.91, bottom=0.04, left=0.03, right=0.97)
+    for ax, img in zip([fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, :])], [q1_img, q2_img, q3_img]):
+        ax.imshow(img)
+        ax.axis("off")
+
+    for out_path in [f"{OUTPUT_DIR}/shwesin_dashboard.png", f"{TEAM_OUTPUT_DIR}/shwesin_dashboard.png"]:
+        plt.savefig(out_path, dpi=300, facecolor=fig.get_facecolor())
+    plt.close()
+
+    logger.info("Updated unified shwesin_dashboard.png in analysis/fraud_analysis_shwesin/ and fraud_analysis_outputs/.")
+    return f"{TEAM_OUTPUT_DIR}/shwesin_dashboard.png"
+
+
 @flow(name="spbuy-fraud-analytics-shwesin", log_prints=True)
 def run_fraud_analytics_flow():
     logger = get_run_logger()
     start_time = time.time()
-    logger.info("Starting SP-buy Automated Fraud Analytics Prefect Flow (Shwesin)...")
+    logger.info("Starting SP-buy Automated Fraud Analytics Prefect Flow (Shwe Sin)...")
 
     task_payment_collect_fraud()
     task_customer_risk_clusters()
     task_refund_abuse_patterns()
+    task_generate_dashboard_png()
 
     elapsed = time.time() - start_time
-    logger.info(f"Completed all 3 fraud analytics tasks and updated charts in {elapsed:.2f}s (Target: < 180s).")
+    logger.info(f"Completed all 4 fraud analytics tasks and updated dashboard in {elapsed:.2f}s (Target: < 180s).")
 
 
 if __name__ == "__main__":

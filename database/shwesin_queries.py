@@ -1,10 +1,12 @@
 import os
 from urllib.parse import quote_plus
-import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
-from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 
 load_dotenv()
 
@@ -47,11 +49,14 @@ df_q1 = run_query(q1_sql)
 print("\n=== Q1: Fraud Exposure by Payment Method & Collect Type ===")
 print(df_q1.to_string(index=False))
 
-plt.figure(figsize=(10, 5))
-ax1 = sns.barplot(data=df_q1, x="payment_method", y="fraud_rate_pct", hue="collect_type")
-ax1.set_title("Fraud Rate (%) by Payment Method & Collection Type", fontsize=13, fontweight="bold")
-ax1.set_ylabel("Fraud Rate (%)")
-ax1.set_xlabel("Payment Method")
+top_methods = df_q1.groupby("payment_method")["fraud_rate_pct"].max().nlargest(10).index
+df_q1_top = df_q1[df_q1["payment_method"].isin(top_methods)]
+
+plt.figure(figsize=(10, 6))
+ax1 = sns.barplot(data=df_q1_top, y="payment_method", x="fraud_rate_pct", hue="collect_type", order=top_methods)
+ax1.set_title("Top 10 Payment Methods by Fraud Rate (%) & Collection Type", fontsize=13, fontweight="bold")
+ax1.set_xlabel("Fraud Rate (%)")
+ax1.set_ylabel("Payment Method")
 plt.legend(title="Collect Type")
 plt.tight_layout()
 plt.savefig(f"{OUTPUT_DIR}/q1_payment_collect_fraud.png", dpi=300)
@@ -112,11 +117,15 @@ print("\n=== Q3: Refund & Cancellation Behavior (Legitimate vs. Fraud) ===")
 print(df_q3[["Status", "total_orders", "avg_order_value_sgd", "avg_refund_value_sgd", "avg_50d_refund_count", "avg_50d_cancel_count"]].to_string(index=False))
 
 fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-sns.barplot(data=df_q3, x="Status", y="avg_refund_value_sgd", ax=axes[0], palette=["#4c72b0", "#dd8452"])
+sns.barplot(
+    data=df_q3, x="Status", y="avg_refund_value_sgd", hue="Status", legend=False, ax=axes[0], palette=["#4c72b0", "#dd8452"]
+)
 axes[0].set_title("Average Refund Value (SGD)", fontweight="bold")
 axes[0].set_ylabel("SGD")
 
-sns.barplot(data=df_q3, x="Status", y="avg_50d_refund_count", ax=axes[1], palette=["#4c72b0", "#dd8452"])
+sns.barplot(
+    data=df_q3, x="Status", y="avg_50d_refund_count", hue="Status", legend=False, ax=axes[1], palette=["#4c72b0", "#dd8452"]
+)
 axes[1].set_title("Avg Refunded Orders in Last 50 Days", fontweight="bold")
 axes[1].set_ylabel("Order Count")
 
