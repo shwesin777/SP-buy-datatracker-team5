@@ -20,7 +20,7 @@ RDS_DB = os.getenv("RDS_DB", "spbuy_db")
 DATABASE_URL = f"mysql+pymysql://{RDS_USER}:{RDS_PASSWORD}@{RDS_HOST}:{RDS_PORT}/{RDS_DB}"
 engine = create_engine(DATABASE_URL)
 
-OUTPUT_DIR = "analysis/fraud_analysis_shwesin"
+OUTPUT_DIR = "fraud_analysis_outputs/shwesin"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 sns.set_theme(style="whitegrid")
 

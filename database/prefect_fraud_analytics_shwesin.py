@@ -17,7 +17,7 @@ load_dotenv()
 # Support local Prefect server by default, or cloud Prefect server via PREFECT_API_URL in .env (PBI 14)
 os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
 
-OUTPUT_DIR = "analysis/fraud_analysis_shwesin"
+OUTPUT_DIR = "fraud_analysis_outputs/shwesin"
 TEAM_OUTPUT_DIR = "fraud_analysis_outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(TEAM_OUTPUT_DIR, exist_ok=True)
@@ -181,12 +181,12 @@ def task_generate_dashboard_png() -> str:
         ax.imshow(img)
         ax.axis("off")
 
-    for out_path in [f"{OUTPUT_DIR}/shwesin_dashboard.png", f"{TEAM_OUTPUT_DIR}/shwesin_dashboard.png"]:
-        plt.savefig(out_path, dpi=300, facecolor=fig.get_facecolor())
+    out_path = f"{OUTPUT_DIR}/shwesin_dashboard.png"
+    plt.savefig(out_path, dpi=300, facecolor=fig.get_facecolor())
     plt.close()
 
     logger.info("Updated unified shwesin_dashboard.png in analysis/fraud_analysis_shwesin/ and fraud_analysis_outputs/.")
-    return f"{TEAM_OUTPUT_DIR}/shwesin_dashboard.png"
+    return out_path
 
 
 @flow(name="spbuy-fraud-analytics-shwesin", log_prints=True)

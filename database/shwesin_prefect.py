@@ -17,10 +17,8 @@ load_dotenv()
 # Support local Prefect server by default, or cloud Prefect server via PREFECT_API_URL in .env (PBI 14)
 os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
 
-OUTPUT_DIR = "analysis/fraud_analysis_shwesin"
-TEAM_OUTPUT_DIR = "fraud_analysis_outputs"
+OUTPUT_DIR = "fraud_analysis_outputs/shwesin"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(TEAM_OUTPUT_DIR, exist_ok=True)
 sns.set_theme(style="whitegrid")
 
 
