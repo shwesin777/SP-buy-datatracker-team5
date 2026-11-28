@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "d
 from db_config import get_db_engine  # type: ignore
 
 load_dotenv()
-OUTPUT_DIR = "fraud_analysis_outputs"
+OUTPUT_DIR = "fraud_analysis_outputs/ernest"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
