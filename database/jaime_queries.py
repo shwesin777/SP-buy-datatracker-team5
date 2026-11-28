@@ -128,8 +128,8 @@ def task_generate_dashboard(
     results: pd.DataFrame, value_results: pd.DataFrame, refund_results: pd.DataFrame
 ):
     logger = get_run_logger()
-    output_dir = Path(__file__).resolve().parent.parent / "fraud_analysis_outputs"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = Path(__file__).resolve().parent.parent / "fraud_analysis_outputs" / "jaime"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     sns.set_theme(style="whitegrid")
     fig, axes = plt.subplots(2, 2, figsize=(14, 9), layout="constrained")
@@ -200,4 +200,4 @@ def run_jaime_fraud_analytics_flow():
 
 
 if __name__ == "__main__":
-    fraud_analytics_flow.serve(name="jaime-fraud-analytics")
+    run_jaime_fraud_analytics_flow.serve(name="jaime-fraud-analytics")
