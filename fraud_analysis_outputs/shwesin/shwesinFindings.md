@@ -2,7 +2,7 @@
 **Author:** Shwe Sin (2508315)  
 **Data Source:** AWS RDS MySQL (`cleaned_fraud_data`)  
 **Pipeline Scripts:** `database/fraud_analytics_shwesin.py` and `database/prefect_fraud_analytics_shwesin.py`  
-**Dashboard:** [View Shwe Sin’s dashboard](../fraud_analysis_outputs/shwesin/shwesin_dashboard.png)
+**Dashboard:** [View Shwe Sin’s dashboard](shwesin_dashboard.png)
 
 ---
 
